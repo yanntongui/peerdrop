@@ -1,0 +1,15 @@
+{
+  "name": "peerdrop-signaling",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "bun run dev.ts",
+    "start": "bun run dev.ts"
+  },
+  "dependencies": {
+    "socket.io": "^4.7.4"
+  },
+  "devDependencies": {
+    "@types/bun": "latest"
+  }
+}
