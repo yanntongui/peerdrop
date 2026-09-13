@@ -17,6 +17,7 @@
     <span class="brand-name">PeerDrop</span>
   </a>
   <div class="nav-actions">
+    <a href="/history" class="nav-link">History</a>
     <ThemeToggle />
   </div>
 </nav>
@@ -58,5 +59,19 @@
     display: flex;
     align-items: center;
     gap: 0.5rem;
+  }
+
+  .nav-link {
+    padding: 0.375rem 0.75rem;
+    border-radius: 0.375rem;
+    font-size: 0.875rem;
+    color: rgb(148 163 184);
+    text-decoration: none;
+    transition: all 0.2s;
+  }
+
+  .nav-link:hover {
+    color: white;
+    background-color: rgba(255 255 255 / 0.1);
   }
 </style>
