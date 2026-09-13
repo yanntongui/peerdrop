@@ -27,6 +27,26 @@
 - **Features**: Notifications, clipboard, remote control
 - **Limitation**: Local only, complex protocol
 
+### Features Reused from LocalSend & KDE Connect
+
+#### From LocalSend
+| Feature | Implementation | Phase |
+|---------|----------------|-------|
+| REST Protocol | 6 routes: /register, /prepare-upload, /upload, /cancel, /prepare-download, /download | 1 |
+| Multicast UDP | 224.0.0.167:53317 for local discovery | 2 |
+| Self-signed certs | Auto-generated HTTPS certificates | 4 |
+| CLI | Command-line interface for terminal users | 6 |
+| Download API | Receiver-initiated file retrieval | 2 |
+
+#### From KDE Connect
+| Feature | Implementation | Phase |
+|---------|----------------|-------|
+| Persistent pairing | Devices remembered across sessions | 3 |
+| Plugin architecture | Modular, extensible feature system | 6 |
+| Clipboard sync | Copy/paste between devices | 4 |
+| Notifications mirroring | Phone notifications on desktop | 5 |
+| Identity packet | Full device metadata exchange | 1 |
+
 ### PeerDrop Advantages
 | Feature | LocalSend | KDE Connect | **PeerDrop** |
 |---------|-----------|-------------|--------------|
@@ -36,6 +56,9 @@
 | Web app | ✅ | ❌ | ✅ |
 | Streaming | ❌ | ❌ | ✅ Direct to disk |
 | Discovery | Multicast | UDP broadcast | Both + Signaling |
+| Phone Clone | ❌ | ❌ | ✅ Full migration |
+| REST Protocol | ✅ | ❌ | ✅ Simplified |
+| Identity Packet | ❌ | ✅ | ✅ Enhanced |
 
 ---
 
@@ -76,6 +99,56 @@
 │  → File System Access API → Direct disk write            │
 │  → Memory: ~64 KB only                                  │
 └─────────────────────────────────────────────────────────┘
+```
+
+### REST Protocol (LocalSend-Inspired)
+```
+┌─────────────────────────────────────────────────────────┐
+│                   REST API ROUTES                        │
+├─────────────────────────────────────────────────────────┤
+│                                                          │
+│  POST /api/peers/register                                │
+│  → Register device for discovery                         │
+│  → Returns: DeviceData (identity packet)                 │
+│                                                          │
+│  POST /api/transfer/prepare                              │
+│  → Send file metadata (name, size, hash)                 │
+│  → Returns: transferId, tokens                           │
+│                                                          │
+│  POST /api/transfer/upload?transferId=X&fileId=Y&token=Z │
+│  → Upload file chunk (binary)                            │
+│  → Returns: 200 OK                                       │
+│                                                          │
+│  POST /api/transfer/cancel?transferId=X                  │
+│  → Cancel active transfer                                │
+│  → Returns: 200 OK                                       │
+│                                                          │
+│  POST /api/download/request                              │
+│  → Receiver requests file metadata                       │
+│  → Returns: FileMeta list                                │
+│                                                          │
+│  GET /api/download/[fileId]?token=X                      │
+│  → Receiver downloads file (binary stream)               │
+│  → Returns: file data                                    │
+│                                                          │
+└─────────────────────────────────────────────────────────┘
+```
+
+### Identity Packet (KDE Connect-Inspired)
+```json
+{
+  "id": "740bd4b9b4184ee497d6caf1da9315be",
+  "alias": "MacBook Pro de Yann",
+  "deviceModel": "MacBook Pro 16\"",
+  "deviceType": "desktop",
+  "fingerprint": "sha256-of-certificate",
+  "protocol": "webrtc",
+  "capabilities": ["files", "clipboard", "notifications"],
+  "version": "1.0.0",
+  "os": "macOS 14.0",
+  "ip": "192.168.1.42",
+  "port": 53317
+}
 ```
 
 ---
@@ -142,6 +215,21 @@ trusted: boolean
 protocol: 'local' | 'remote'
 ```
 
+### DeviceData (Identity Packet)
+```
+id: string (UUID)
+alias: string (user-defined name)
+deviceModel: string (e.g., "MacBook Pro")
+deviceType: 'mobile' | 'desktop' | 'tablet' | 'web'
+fingerprint: string (SHA-256 of certificate)
+protocol: 'webrtc' | 'rest'
+capabilities: string[] (files, clipboard, notifications)
+version: string (app version)
+os: string (iOS, Android, macOS, Windows, Linux)
+ip: string | null (local IP)
+port: number | null
+```
+
 ### ShareLink
 ```
 id: string
@@ -167,13 +255,32 @@ passwordHash: string | null
 - SHA-256 integrity check
 - **Streaming transfer (unlimited size)**
 - **Direct disk write (File System Access API)**
+- **Identity packet (device metadata)**
+- **REST protocol (LocalSend-inspired)**
 
 ### Database Changes
 - None (all in-memory / IndexedDB)
 
-### API Routes
-- `POST /api/room` — create signaling room
+### API Routes (REST Protocol)
+- `POST /api/peers/register` — register device / discovery
+- `POST /api/transfer/prepare` — send file metadata
+- `POST /api/transfer/upload` — send file chunk
+- `POST /api/transfer/cancel` — cancel transfer
 - `WS /socket.io` — signaling WebSocket
+
+### Identity Packet
+```json
+{
+  "id": "device-uuid",
+  "alias": "My Laptop",
+  "deviceModel": "MacBook Pro",
+  "deviceType": "desktop",
+  "fingerprint": "sha256-hash",
+  "protocol": "webrtc",
+  "capabilities": ["files", "clipboard", "notifications"],
+  "version": "1.0.0"
+}
+```
 
 ### Frontend
 - `/` — Home page with drag & drop
@@ -230,6 +337,7 @@ passwordHash: string | null
 - Better error handling
 - Dark mode
 - **Multicast UDP discovery (local)**
+- **Download API (receiver-initiated)**
 
 ### Database Changes
 - None (still stateless)
@@ -237,6 +345,9 @@ passwordHash: string | null
 ### API Routes
 - `POST /api/link` — create share link
 - `GET /api/link/[id]` — validate link
+- `POST /api/download/request` — receiver requests file
+- `GET /api/download/[fileId]` — receiver downloads file
+- `GET /api/peers/discover` — discover local peers
 
 ### Frontend
 - `/receive/link/[linkId]` — Link-based receiver
@@ -276,6 +387,8 @@ passwordHash: string | null
 - [ ] Speed calculation (MB/s)
 - [ ] ETA estimation
 - [ ] **Disk space check before transfer**
+- [ ] **Download API (receiver-initiated)**
+- [ ] **File metadata exchange**
 
 ### Definition of Done
 - Files transfer across different networks
@@ -728,6 +841,7 @@ hash: string
 | Transfer | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | FileMeta | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | ChunkInfo | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| DeviceData | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | ShareLink | | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | PairedDevice | | | ✓ | ✓ | ✓ | ✓ | ✓ |
 | TransferHistory | | | | ✓ | ✓ | ✓ | ✓ |
