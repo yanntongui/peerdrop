@@ -1,6 +1,7 @@
 <script lang="ts">
   import '../app.css';
   import ThemeToggle from '$lib/components/ThemeToggle.svelte';
+  import DesktopControls from '$lib/components/DesktopControls.svelte';
   import { onMount } from 'svelte';
 
   onMount(() => {
@@ -19,6 +20,7 @@
   <div class="nav-actions">
     <a href="/history" class="nav-link">History</a>
     <ThemeToggle />
+    <DesktopControls />
   </div>
 </nav>
 
