@@ -11,5 +11,18 @@
 }
 
 body {
-  @apply bg-slate-900 text-slate-100 min-h-screen;
+  background-color: var(--bg-primary);
+  color: var(--text-primary);
+  min-height: 100vh;
+  transition: background-color 0.3s, color 0.3s;
+}
+
+:root.dark {
+  --bg-primary: #020617;
+  --bg-secondary: #0f172a;
+}
+
+:root.dark body,
+:root.dark {
+  background-color: #020617;
 }

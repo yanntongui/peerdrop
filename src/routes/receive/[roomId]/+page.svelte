@@ -1,20 +1,19 @@
 <script lang="ts">
   import { page } from '$app/stores';
   import ProgressBar from '$lib/components/ProgressBar.svelte';
+  import Toast from '$lib/components/Toast.svelte';
   import { createIdentityPacket, type DeviceData } from '$lib/utils/identity';
   import { WebRTCManager } from '$lib/utils/webrtc';
   import { saveFileToDisk, writeChunk, closeFileWriter } from '$lib/utils/streaming';
+  import { updateTransferProgress, getResumeInfo, generateTransferId } from '$lib/utils/resume';
   import { onMount } from 'svelte';
 
-  // Get room ID from URL
   $: roomId = $page.params.roomId;
 
-  // State
   let deviceInfo: DeviceData | null = null;
   let webrtc: WebRTCManager | null = null;
   let senderInfo: DeviceData | null = null;
 
-  // Transfer state
   let transferStatus: 'connecting' | 'waiting' | 'receiving' | 'completed' | 'error' = 'connecting';
   let receivedFiles: any[] = [];
   let currentFile: any = null;
@@ -23,15 +22,25 @@
   let bytesReceived = 0;
   let totalBytes = 0;
   let error: string | null = null;
+  let transferId: string = '';
 
-  // File writer
   let fileWriter: FileSystemWritableFileStream | null = null;
+  let startTime: number = Date.now();
+
+  // Toast
+  let toastShow = false;
+  let toastMessage = '';
+  let toastType: 'info' | 'success' | 'warning' | 'error' = 'info';
+
+  function showToast(message: string, type: 'info' | 'success' | 'warning' | 'error' = 'info') {
+    toastMessage = message;
+    toastType = type;
+    toastShow = true;
+  }
 
   onMount(async () => {
-    // Create device identity
     deviceInfo = await createIdentityPacket();
-
-    // Connect to signaling server
+    transferId = generateTransferId();
     await connectToSignaling();
   });
 
@@ -47,6 +56,13 @@
     webrtc.onPeerConnected = (peerId, device) => {
       senderInfo = device;
       transferStatus = 'waiting';
+      showToast(`${device.alias} connected`, 'success');
+    };
+
+    webrtc.onPeerDisconnected = () => {
+      if (transferStatus === 'receiving') {
+        showToast('Connection lost. Transfer paused.', 'warning');
+      }
     };
 
     webrtc.onData = (peerId, data) => {
@@ -56,6 +72,7 @@
     webrtc.onError = (err) => {
       error = err.message;
       transferStatus = 'error';
+      showToast(err.message, 'error');
     };
 
     try {
@@ -63,20 +80,34 @@
     } catch (err) {
       error = 'Failed to connect to signaling server';
       transferStatus = 'error';
+      showToast(error, 'error');
       console.error(err);
     }
   }
 
   async function handleData(peerId: string, data: any) {
     switch (data.type) {
-      case 'transfer-request':
-        // Accept transfer automatically
+      case 'transfer-request': {
         senderInfo = webrtc?.getPeers().find((p) => p.peerId === peerId)?.deviceInfo || null;
         receivedFiles = data.files;
         totalBytes = data.files.reduce((sum: number, f: any) => sum + f.size, 0);
+        if (data.transferId) transferId = data.transferId;
+
+        // Check if we can resume
+        const firstFile = data.files[0];
+        if (firstFile) {
+          const resumeInfo = getResumeInfo(transferId, firstFile.id);
+          if (resumeInfo.canResume) {
+            showToast(`Resuming transfer (${Math.round(resumeInfo.percent)}% done)`, 'info');
+          }
+        }
+
         webrtc?.send(peerId, { type: 'transfer-accepted' });
         transferStatus = 'receiving';
+        startTime = Date.now();
+        showToast('Transfer started', 'info');
         break;
+      }
 
       case 'file-chunk':
         await handleFileChunk(data);
@@ -91,9 +122,7 @@
   async function handleFileChunk(data: any) {
     const { fileId, chunk } = data;
 
-    // Start new file if needed
     if (!currentFile || currentFile.id !== fileId) {
-      // Close previous file writer
       if (fileWriter) {
         await closeFileWriter(fileWriter);
         fileWriter = null;
@@ -105,33 +134,39 @@
       }
     }
 
-    // Write chunk to disk
     if (fileWriter) {
       const uint8Array = new Uint8Array(chunk.data);
       await writeChunk(fileWriter, uint8Array.buffer);
     }
 
-    // Update progress
+    // Save progress for resume
+    updateTransferProgress(
+      transferId,
+      fileId,
+      chunk.index,
+      totalBytes,
+      chunk.size,
+      currentFile?.totalChunks || 0,
+      currentFile?.name || 'unknown'
+    );
+
     bytesReceived += chunk.size;
     transferProgress = (bytesReceived / totalBytes) * 100;
     transferSpeed = bytesReceived / ((Date.now() - startTime) / 1000);
   }
 
   async function handleTransferComplete() {
-    // Close file writer
     if (fileWriter) {
       await closeFileWriter(fileWriter);
       fileWriter = null;
     }
 
     transferStatus = 'completed';
+    showToast(`Received ${receivedFiles.length} file${receivedFiles.length > 1 ? 's' : ''}`, 'success');
   }
-
-  let startTime: number = Date.now();
 </script>
 
 <div class="container">
-  <!-- Header -->
   <header class="header">
     <h1 class="logo">
       <span class="icon">📥</span>
@@ -140,7 +175,6 @@
     <p class="tagline">Receiving files...</p>
   </header>
 
-  <!-- Main content -->
   <main class="main">
     {#if transferStatus === 'connecting'}
       <section class="status-section">
@@ -193,10 +227,13 @@
         <div class="error-icon">❌</div>
         <h2 class="step-title">Transfer failed</h2>
         <p class="error-message">{error}</p>
+        <a href="/" class="back-link">← Back to Home</a>
       </section>
     {/if}
   </main>
 </div>
+
+<Toast bind:show={toastShow} message={toastMessage} type={toastType} />
 
 <style>
   .container {
@@ -256,7 +293,9 @@
   }
 
   @keyframes spin {
-    to { transform: rotate(360deg); }
+    to {
+      transform: rotate(360deg);
+    }
   }
 
   .sender-info {
@@ -294,5 +333,19 @@
 
   .error-message {
     color: rgb(248 113 113);
+  }
+
+  .back-link {
+    margin-top: 1rem;
+    padding: 0.5rem 1rem;
+    border-radius: 0.5rem;
+    font-size: 0.875rem;
+    color: rgb(14 165 233);
+    text-decoration: none;
+    transition: color 0.2s;
+  }
+
+  .back-link:hover {
+    color: rgb(56 189 248);
   }
 </style>

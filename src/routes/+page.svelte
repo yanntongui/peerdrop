@@ -3,35 +3,47 @@
   import FileList from '$lib/components/FileList.svelte';
   import QRCode from '$lib/components/QRCode.svelte';
   import ProgressBar from '$lib/components/ProgressBar.svelte';
+  import Toast from '$lib/components/Toast.svelte';
   import { createIdentityPacket, type DeviceData } from '$lib/utils/identity';
   import { WebRTCManager } from '$lib/utils/webrtc';
   import { generateFileMeta, streamFile, formatBytes } from '$lib/utils/streaming';
+  import { createShareLink, generateShareUrl, type ShareLink } from '$lib/utils/sharelink';
+  import { generateTransferId } from '$lib/utils/resume';
   import { onMount } from 'svelte';
 
-  // State
   let files: File[] = [];
   let deviceInfo: DeviceData | null = null;
   let roomId: string = '';
   let webrtc: WebRTCManager | null = null;
 
-  // Transfer state
   let peers: { id: string; device: DeviceData }[] = [];
   let selectedPeer: string | null = null;
-  let transferStatus: 'idle' | 'connecting' | 'waiting' | 'transferring' | 'completed' | 'error' =
-    'idle';
+  let transferStatus: 'idle' | 'connecting' | 'waiting' | 'transferring' | 'completed' | 'error' = 'idle';
   let transferProgress = 0;
   let transferSpeed = 0;
   let transferEta = 0;
   let error: string | null = null;
+  let startTime: number = 0;
+
+  // Share link
+  let shareLink: ShareLink | null = null;
+  let showShareLink = false;
+  let linkCopied = false;
+
+  // Toast
+  let toastShow = false;
+  let toastMessage = '';
+  let toastType: 'info' | 'success' | 'warning' | 'error' = 'info';
+
+  function showToast(message: string, type: 'info' | 'success' | 'warning' | 'error' = 'info') {
+    toastMessage = message;
+    toastType = type;
+    toastShow = true;
+  }
 
   onMount(async () => {
-    // Create device identity
     deviceInfo = await createIdentityPacket();
-
-    // Generate room ID
     roomId = crypto.randomUUID().slice(0, 8);
-
-    // Connect to signaling server
     await connectToSignaling();
   });
 
@@ -46,12 +58,17 @@
 
     webrtc.onPeerConnected = (peerId, device) => {
       peers = [...peers, { id: peerId, device }];
+      showToast(`${device.alias} connected`, 'success');
     };
 
     webrtc.onPeerDisconnected = (peerId) => {
+      const peer = peers.find((p) => p.id === peerId);
       peers = peers.filter((p) => p.id !== peerId);
       if (selectedPeer === peerId) {
         selectedPeer = null;
+      }
+      if (peer) {
+        showToast(`${peer.device.alias} disconnected`, 'warning');
       }
     };
 
@@ -61,16 +78,24 @@
       }
     };
 
+    webrtc.onError = (err) => {
+      error = err.message;
+      showToast(err.message, 'error');
+    };
+
     try {
       await webrtc.connect();
+      showToast('Connected to signaling server', 'success');
     } catch (err) {
       error = 'Failed to connect to signaling server';
+      showToast(error, 'error');
       console.error(err);
     }
   }
 
   function handleFiles(event: CustomEvent<File[]>) {
     files = event.detail;
+    showToast(`${files.length} file${files.length > 1 ? 's' : ''} selected`, 'info');
   }
 
   function handleRemoveFile(event: CustomEvent<number>) {
@@ -85,35 +110,55 @@
     selectedPeer = peerId;
   }
 
+  async function createShareLinkAction() {
+    if (files.length === 0) return;
+
+    const fileMetas = await Promise.all(files.map(generateFileMeta));
+    shareLink = await createShareLink(roomId, fileMetas, {
+      expiresIn: 24 * 60 * 60 * 1000, // 24 hours
+    });
+    showShareLink = true;
+    showToast('Share link created', 'success');
+  }
+
+  function copyShareLink() {
+    if (!shareLink) return;
+    const url = generateShareUrl(shareLink.id);
+    navigator.clipboard.writeText(url);
+    linkCopied = true;
+    showToast('Link copied to clipboard', 'success');
+    setTimeout(() => (linkCopied = false), 2000);
+  }
+
   async function sendTransferRequest() {
     if (!webrtc || !selectedPeer || files.length === 0) return;
 
     transferStatus = 'connecting';
     error = null;
 
-    // Generate file metadata
     const fileMetas = await Promise.all(files.map(generateFileMeta));
 
-    // Send transfer request
     webrtc.send(selectedPeer, {
       type: 'transfer-request',
       files: fileMetas,
+      transferId: generateTransferId(),
     });
 
     transferStatus = 'waiting';
+    showToast('Transfer request sent', 'info');
   }
 
   async function startTransfer(peerId: string) {
     if (!webrtc || files.length === 0) return;
 
     transferStatus = 'transferring';
+    startTime = Date.now();
 
     try {
       for (const file of files) {
         let bytesTransferred = 0;
 
         for await (const chunk of streamFile(file)) {
-          // Send chunk via WebRTC
           webrtc.send(peerId, {
             type: 'file-chunk',
             fileId: file.name,
@@ -128,37 +173,32 @@
 
           bytesTransferred += chunk.size;
 
-          // Update progress
           const totalSize = files.reduce((sum, f) => sum + f.size, 0);
           transferProgress = (bytesTransferred / totalSize) * 100;
           transferSpeed = bytesTransferred / ((Date.now() - startTime) / 1000);
-          transferEta = (totalSize - bytesTransferred) / transferSpeed;
+          transferEta = (totalBytes - bytesTransferred) / transferSpeed;
         }
       }
 
-      // Send transfer complete
       webrtc.send(peerId, {
         type: 'transfer-complete',
         totalFiles: files.length,
       });
 
       transferStatus = 'completed';
+      showToast('Transfer complete!', 'success');
     } catch (err) {
       transferStatus = 'error';
       error = 'Transfer failed';
+      showToast(error, 'error');
       console.error(err);
     }
   }
 
-  let startTime: number = 0;
-
-  $: if (transferStatus === 'transferring') {
-    startTime = Date.now();
-  }
+  $: totalBytes = files.reduce((sum, f) => sum + f.size, 0);
 </script>
 
 <div class="container">
-  <!-- Header -->
   <header class="header">
     <h1 class="logo">
       <span class="icon">📁</span>
@@ -167,19 +207,16 @@
     <p class="tagline">Share files directly. No servers. No limits.</p>
   </header>
 
-  <!-- Main content -->
   <main class="main">
     {#if !deviceInfo}
       <div class="loading">Initializing...</div>
     {:else if transferStatus === 'idle'}
-      <!-- Step 1: Select files -->
       <section class="step">
         <h2 class="step-title">1. Select files</h2>
         <DropZone on:files={handleFiles} />
         <FileList {files} on:remove={handleRemoveFile} on:clear={handleClearFiles} />
       </section>
 
-      <!-- Step 2: Connect to peer -->
       <section class="step">
         <h2 class="step-title">2. Scan QR Code</h2>
         <div class="qr-section">
@@ -189,9 +226,30 @@
             <span class="room-id">{roomId}</span>
           </div>
         </div>
+
+        {#if files.length > 0}
+          <div class="share-section">
+            <button class="share-btn" on:click={createShareLinkAction}>
+              🔗 Create Share Link
+            </button>
+          </div>
+        {/if}
+
+        {#if showShareLink && shareLink}
+          <div class="share-link-box">
+            <input
+              class="share-input"
+              type="text"
+              value={generateShareUrl(shareLink.id)}
+              readonly
+            />
+            <button class="copy-btn" on:click={copyShareLink}>
+              {linkCopied ? '✓ Copied' : 'Copy'}
+            </button>
+          </div>
+        {/if}
       </section>
 
-      <!-- Step 3: Select peer -->
       <section class="step">
         <h2 class="step-title">3. Connected devices</h2>
         {#if peers.length === 0}
@@ -221,20 +279,17 @@
         {/if}
       </section>
 
-      <!-- Send button -->
       {#if files.length > 0 && selectedPeer}
         <button class="send-btn" on:click={sendTransferRequest}>
           Send {files.length} {files.length === 1 ? 'file' : 'files'}
         </button>
       {/if}
 
-      <!-- Error -->
       {#if error}
         <div class="error">{error}</div>
       {/if}
 
     {:else if transferStatus === 'transferring' || transferStatus === 'completed'}
-      <!-- Transfer progress -->
       <section class="transfer-section">
         <h2 class="step-title">
           {transferStatus === 'completed' ? 'Transfer complete!' : 'Transferring...'}
@@ -242,7 +297,7 @@
         <ProgressBar
           progress={transferProgress}
           bytesTransferred={transferSpeed * ((Date.now() - startTime) / 1000)}
-          totalBytes={files.reduce((sum, f) => sum + f.size, 0)}
+          {totalBytes}
           speed={transferSpeed}
           eta={transferEta}
           status={transferStatus === 'completed' ? 'completed' : 'transferring'}
@@ -256,6 +311,8 @@
     {/if}
   </main>
 </div>
+
+<Toast bind:show={toastShow} message={toastMessage} type={toastType} />
 
 <style>
   .container {
@@ -412,5 +469,58 @@
     padding: 3rem 0;
     text-align: center;
     color: rgb(148 163 184);
+  }
+
+  .share-section {
+    margin-top: 1rem;
+    padding-top: 1rem;
+    border-top: 1px solid rgba(51 65 85 / 0.5);
+  }
+
+  .share-btn {
+    width: 100%;
+    padding: 0.625rem 1rem;
+    border-radius: 0.5rem;
+    font-size: 0.875rem;
+    font-weight: 500;
+    color: rgb(203 213 225);
+    background-color: rgba(51 65 85 / 0.5);
+    transition: all 0.2s;
+  }
+
+  .share-btn:hover {
+    background-color: rgb(51 65 85);
+    color: white;
+  }
+
+  .share-link-box {
+    display: flex;
+    gap: 0.5rem;
+    margin-top: 0.75rem;
+  }
+
+  .share-input {
+    flex: 1;
+    padding: 0.5rem 0.75rem;
+    border-radius: 0.375rem;
+    font-size: 0.75rem;
+    font-family: monospace;
+    color: rgb(203 213 225);
+    background-color: rgb(15 23 42);
+    border: 1px solid rgb(51 65 85);
+  }
+
+  .copy-btn {
+    padding: 0.5rem 0.75rem;
+    border-radius: 0.375rem;
+    font-size: 0.75rem;
+    font-weight: 500;
+    color: white;
+    background-color: rgb(14 165 233);
+    transition: all 0.2s;
+  }
+
+  .copy-btn:hover {
+    background-color: rgb(56 189 248);
   }
 </style>
