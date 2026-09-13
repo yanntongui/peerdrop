@@ -1,0 +1,9 @@
+node_modules
+.svelte-kit
+output
+dist
+target
+*.log
+.DS_Store
+.env
+.env.local
