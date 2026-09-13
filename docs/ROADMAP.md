@@ -515,6 +515,166 @@ passwordHash: string | null
 
 ---
 
+## Phase 7 — Phone Clone / Migration Mode
+*Goal: Full device migration — transfer everything from old phone to new phone.*
+*Depends on: Phase 6*
+*Estimated effort: 4-5 sessions*
+
+### What's New
+- **Full device clone** (contacts, messages, apps, photos, settings)
+- **Category-based selection** (choose what to migrate)
+- **QR code pairing** (instant connection)
+- **WiFi Direct** (no internet required)
+- **Incremental sync** (skip already transferred data)
+- **Progress dashboard** (detailed migration status)
+
+### Inspired By
+- EasyShare Phone Clone (vivo/iQOO)
+- Samsung Smart Switch
+- Apple Move to iOS
+- Google Backup & Restore
+
+### Migration Categories
+
+| Category | Data | Priority |
+|----------|------|----------|
+| **Contacts** | All contacts, groups | P0 |
+| **Messages** | SMS, MMS, chat history | P0 |
+| **Call Logs** | Recent calls | P0 |
+| **Photos** | Camera roll, screenshots | P0 |
+| **Videos** | All videos | P0 |
+| **Apps** | APK list + data (if supported) | P1 |
+| **Music** | Audio files | P0 |
+| **Documents** | PDF, files | P0 |
+| **Settings** | WiFi, Bluetooth, display | P2 |
+| **Home Screen** | App layout | P2 |
+| **Notes** | Notes content | P1 |
+| **Calendar** | Events, reminders | P1 |
+
+### Architecture
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                OLD DEVICE (Sender)                        │
+├─────────────────────────────────────────────────────────┤
+│  1. Scan categories (contacts, photos, apps, etc.)       │
+│  2. Generate manifest (list of all data)                 │
+│  3. Display QR code with connection info                 │
+│  4. Wait for new device to connect                       │
+└─────────────────────────────────────────────────────────┘
+                          │
+                          │ QR Code Scan
+                          ▼
+┌─────────────────────────────────────────────────────────┐
+│               NEW DEVICE (Receiver)                       │
+├─────────────────────────────────────────────────────────┤
+│  1. Scan QR code → establish WiFi Direct connection      │
+│  2. Receive manifest → display selection UI              │
+│  3. User selects categories to transfer                  │
+│  4. Receive data → restore to system                     │
+│  5. Install apps (with user permission)                  │
+└─────────────────────────────────────────────────────────┘
+```
+
+### Data Model
+
+#### MigrationSession
+```
+id: string (UUID)
+oldDeviceId: string
+newDeviceId: string
+status: 'connecting' | 'scanning' | 'transferring' | 'restoring' | 'completed'
+categories: MigrationCategory[]
+startedAt: Date
+completedAt: Date | null
+totalSize: number
+transferredSize: number
+```
+
+#### MigrationCategory
+```
+id: string
+name: string (contacts, photos, apps, etc.)
+enabled: boolean
+itemCount: number
+totalSize: number
+transferred: number
+status: 'pending' | 'scanning' | 'transferring' | 'restoring' | 'completed'
+items: MigrationItem[]
+```
+
+#### MigrationItem
+```
+id: string
+categoryId: string
+name: string
+size: number
+type: string
+sourcePath: string
+destPath: string
+status: 'pending' | 'transferred' | 'restored' | 'skipped'
+hash: string
+```
+
+### API Routes
+- `POST /api/migration/start` — start migration session
+- `POST /api/migration/manifest` — send/receive data manifest
+- `POST /api/migration/transfer` — transfer category data
+- `POST /api/migration/restore` — restore data on new device
+- `GET /api/migration/status` — check migration progress
+
+### Frontend
+- `/migrate` — Migration landing page
+- `/migrate/scan` — QR code scanner
+- `/migrate/select` — Category selection UI
+- `/migrate/progress` — Progress dashboard
+- `/migrate/complete` — Migration complete summary
+
+### Task Checklist
+
+#### Core
+- [ ] Device discovery (WiFi Direct / hotspot)
+- [ ] QR code generation with connection info
+- [ ] Manifest generation (scan all data)
+- [ ] Category selection UI
+- [ ] Incremental transfer (skip existing)
+- [ ] Data restoration on new device
+
+#### Data Types
+- [ ] Contacts (vCard export/import)
+- [ ] Messages (SMS backup format)
+- [ ] Call logs
+- [ ] Photos/Videos (preserve metadata)
+- [ ] Music (preserve playlists)
+- [ ] Documents
+- [ ] Apps (APK extraction)
+- [ ] Settings (WiFi, Bluetooth, etc.)
+
+#### UI
+- [ ] Migration wizard (step by step)
+- [ ] Category cards with progress
+- [ ] Real-time transfer speed
+- [ ] ETA calculation
+- [ ] Error handling + retry
+
+#### Mobile Integration
+- [ ] Android: Contacts API
+- [ ] Android: SMS provider
+- [ ] Android: Media store
+- [ ] Android: Package manager
+- [ ] iOS: Contacts framework
+- [ ] iOS: Photos framework
+
+### Definition of Done
+- Can transfer contacts from old phone to new phone
+- Photos transfer with metadata preserved
+- Apps list transferred (installation optional)
+- Progress shows detailed category status
+- Migration completes without data loss
+- Works offline (no internet required)
+
+---
+
 ## Build Order
 
 | Phase | Goal | Sessions | Priority |
@@ -525,6 +685,7 @@ passwordHash: string | null
 | 4 | Desktop App (Tauri) | 3-4 | P1 |
 | 5 | Mobile App (Capacitor) | 3-4 | P2 |
 | 6 | Multi-Peer + Advanced | 2-3 | P2 |
+| 7 | Phone Clone / Migration | 4-5 | P2 |
 
 ---
 
@@ -562,15 +723,18 @@ passwordHash: string | null
 
 ## Schema Evolution
 
-| Table | Phase 1 | Phase 2 | Phase 3 | Phase 4 | Phase 5 | Phase 6 |
+| Table | Phase 1 | Phase 2 | Phase 3 | Phase 4 | Phase 5 | Phase 6 | Phase 7 |
 |-------|---------|---------|---------|---------|---------|---------|
-| Transfer | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| FileMeta | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| ChunkInfo | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| ShareLink | | ✓ | ✓ | ✓ | ✓ | ✓ |
-| PairedDevice | | | ✓ | ✓ | ✓ | ✓ |
-| TransferHistory | | | | ✓ | ✓ | ✓ |
-| DeviceSettings | | | | ✓ | ✓ | ✓ |
+| Transfer | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| FileMeta | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| ChunkInfo | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| ShareLink | | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| PairedDevice | | | ✓ | ✓ | ✓ | ✓ | ✓ |
+| TransferHistory | | | | ✓ | ✓ | ✓ | ✓ |
+| DeviceSettings | | | | ✓ | ✓ | ✓ | ✓ |
+| MigrationSession | | | | | | | ✓ |
+| MigrationCategory | | | | | | | ✓ |
+| MigrationItem | | | | | | | ✓ |
 
 ---
 
