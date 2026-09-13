@@ -18,13 +18,20 @@
   let webrtc: WebRTCManager | null = null;
 
   let peers: { id: string; device: DeviceData }[] = [];
-  let selectedPeer: string | null = null;
+  let selectedPeers: Set<string> = new Set();
   let transferStatus: 'idle' | 'connecting' | 'waiting' | 'transferring' | 'completed' | 'error' = 'idle';
-  let transferProgress = 0;
-  let transferSpeed = 0;
-  let transferEta = 0;
   let error: string | null = null;
-  let startTime: number = 0;
+
+  // Per-peer transfer progress
+  interface PeerTransfer {
+    peerId: string;
+    peerName: string;
+    progress: number;
+    speed: number;
+    bytesTransferred: number;
+    status: 'pending' | 'transferring' | 'completed' | 'error';
+  }
+  let peerTransfers: PeerTransfer[] = [];
 
   // Share link
   let shareLink: ShareLink | null = null;
@@ -53,7 +60,6 @@
     roomId = crypto.randomUUID().slice(0, 8);
     await connectToSignaling();
 
-    // Detect mobile
     if (typeof window !== 'undefined') {
       isMobileDevice = /Android|iPhone|iPad|iPod/.test(navigator.userAgent) || 'Capacitor' in window;
     }
@@ -76,9 +82,8 @@
     webrtc.onPeerDisconnected = (peerId) => {
       const peer = peers.find((p) => p.id === peerId);
       peers = peers.filter((p) => p.id !== peerId);
-      if (selectedPeer === peerId) {
-        selectedPeer = null;
-      }
+      selectedPeers.delete(peerId);
+      selectedPeers = selectedPeers;
       if (peer) {
         showToast(`${peer.device.alias} disconnected`, 'warning');
       }
@@ -86,7 +91,7 @@
 
     webrtc.onData = (peerId, data) => {
       if (data.type === 'transfer-accepted') {
-        startTransfer(peerId);
+        startTransferForPeer(peerId);
       }
     };
 
@@ -118,8 +123,21 @@
     files = [];
   }
 
-  function selectPeer(peerId: string) {
-    selectedPeer = peerId;
+  function togglePeer(peerId: string) {
+    if (selectedPeers.has(peerId)) {
+      selectedPeers.delete(peerId);
+    } else {
+      selectedPeers.add(peerId);
+    }
+    selectedPeers = selectedPeers;
+  }
+
+  function selectAllPeers() {
+    if (selectedPeers.size === peers.length) {
+      selectedPeers = new Set();
+    } else {
+      selectedPeers = new Set(peers.map((p) => p.id));
+    }
   }
 
   async function createShareLinkAction() {
@@ -127,19 +145,17 @@
 
     const fileMetas = await Promise.all(files.map(generateFileMeta));
     shareLink = await createShareLink(roomId, fileMetas, {
-      expiresIn: 24 * 60 * 60 * 1000, // 24 hours
+      expiresIn: 24 * 60 * 60 * 1000,
     });
     showShareLink = true;
     showToast('Share link created', 'success');
   }
 
   function handleQRScanned(result: string) {
-    // Parse QR result - could be a URL or room ID
     const urlMatch = result.match(/\/receive\/([a-zA-Z0-9-]+)/);
     if (urlMatch) {
       window.location.href = `/receive/${urlMatch[1]}`;
     } else {
-      // Assume it's a room ID
       window.location.href = `/receive/${result}`;
     }
   }
@@ -172,32 +188,55 @@
   }
 
   async function sendTransferRequest() {
-    if (!webrtc || !selectedPeer || files.length === 0) return;
+    if (!webrtc || selectedPeers.size === 0 || files.length === 0) return;
 
     transferStatus = 'connecting';
     error = null;
 
     const fileMetas = await Promise.all(files.map(generateFileMeta));
+    const transferId = generateTransferId();
 
-    webrtc.send(selectedPeer, {
-      type: 'transfer-request',
-      files: fileMetas,
-      transferId: generateTransferId(),
+    // Initialize progress tracking for each peer
+    peerTransfers = Array.from(selectedPeers).map((peerId) => {
+      const peer = peers.find((p) => p.id === peerId);
+      return {
+        peerId,
+        peerName: peer?.device.alias || 'Unknown',
+        progress: 0,
+        speed: 0,
+        bytesTransferred: 0,
+        status: 'pending' as const,
+      };
     });
 
+    // Send request to all selected peers
+    for (const peerId of selectedPeers) {
+      webrtc.send(peerId, {
+        type: 'transfer-request',
+        files: fileMetas,
+        transferId,
+      });
+    }
+
     transferStatus = 'waiting';
-    showToast('Transfer request sent', 'info');
+    showToast(`Transfer request sent to ${selectedPeers.size} device${selectedPeers.size > 1 ? 's' : ''}`, 'info');
   }
 
-  async function startTransfer(peerId: string) {
+  async function startTransferForPeer(peerId: string) {
     if (!webrtc || files.length === 0) return;
 
+    const peerTransfer = peerTransfers.find((p) => p.peerId === peerId);
+    if (peerTransfer) {
+      peerTransfer.status = 'transferring';
+      peerTransfers = peerTransfers;
+    }
+
     transferStatus = 'transferring';
-    startTime = Date.now();
 
     try {
       for (const file of files) {
         let bytesTransferred = 0;
+        const startTime = Date.now();
 
         for await (const chunk of streamFile(file)) {
           webrtc.send(peerId, {
@@ -214,10 +253,14 @@
 
           bytesTransferred += chunk.size;
 
-          const totalSize = files.reduce((sum, f) => sum + f.size, 0);
-          transferProgress = (bytesTransferred / totalSize) * 100;
-          transferSpeed = bytesTransferred / ((Date.now() - startTime) / 1000);
-          transferEta = (totalBytes - bytesTransferred) / transferSpeed;
+          // Update per-peer progress
+          if (peerTransfer) {
+            const totalSize = files.reduce((sum, f) => sum + f.size, 0);
+            peerTransfer.bytesTransferred = bytesTransferred;
+            peerTransfer.progress = (bytesTransferred / totalSize) * 100;
+            peerTransfer.speed = bytesTransferred / ((Date.now() - startTime) / 1000);
+            peerTransfers = peerTransfers;
+          }
         }
       }
 
@@ -226,17 +269,32 @@
         totalFiles: files.length,
       });
 
-      transferStatus = 'completed';
-      showToast('Transfer complete!', 'success');
+      if (peerTransfer) {
+        peerTransfer.status = 'completed';
+        peerTransfer.progress = 100;
+        peerTransfers = peerTransfers;
+      }
+
+      // Check if all peers completed
+      const allDone = peerTransfers.every((p) => p.status === 'completed' || p.status === 'error');
+      if (allDone) {
+        const completedCount = peerTransfers.filter((p) => p.status === 'completed').length;
+        transferStatus = 'completed';
+        showToast(`Transfer complete to ${completedCount} device${completedCount > 1 ? 's' : ''}`, 'success');
+      }
     } catch (err) {
-      transferStatus = 'error';
-      error = 'Transfer failed';
-      showToast(error, 'error');
+      if (peerTransfer) {
+        peerTransfer.status = 'error';
+        peerTransfers = peerTransfers;
+      }
+      showToast(`Transfer failed to ${peerTransfer?.peerName || 'peer'}`, 'error');
       console.error(err);
     }
   }
 
   $: totalBytes = files.reduce((sum, f) => sum + f.size, 0);
+  $: selectedCount = selectedPeers.size;
+  $: allPeersSelected = selectedCount === peers.length && peers.length > 0;
 </script>
 
 <div class="container">
@@ -297,7 +355,14 @@
       </section>
 
       <section class="step">
-        <h2 class="step-title">3. Connected devices</h2>
+        <div class="step-header">
+          <h2 class="step-title">3. Select devices</h2>
+          {#if peers.length > 1}
+            <button class="select-all-btn" on:click={selectAllPeers}>
+              {allPeersSelected ? 'Deselect all' : 'Select all'}
+            </button>
+          {/if}
+        </div>
         {#if peers.length === 0}
           <p class="no-peers">Waiting for devices to connect...</p>
         {:else}
@@ -305,9 +370,16 @@
             {#each peers as peer}
               <button
                 class="peer-item"
-                class:selected={selectedPeer === peer.id}
-                on:click={() => selectPeer(peer.id)}
+                class:selected={selectedPeers.has(peer.id)}
+                on:click={() => togglePeer(peer.id)}
               >
+                <div class="peer-checkbox">
+                  {#if selectedPeers.has(peer.id)}
+                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor">
+                      <path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41L9 16.17z" />
+                    </svg>
+                  {/if}
+                </div>
                 <span class="peer-icon">
                   {peer.device.deviceType === 'mobile'
                     ? '📱'
@@ -322,12 +394,15 @@
               </button>
             {/each}
           </div>
+          {#if selectedCount > 0}
+            <p class="selected-count">{selectedCount} device{selectedCount > 1 ? 's' : ''} selected</p>
+          {/if}
         {/if}
       </section>
 
-      {#if files.length > 0 && selectedPeer}
+      {#if files.length > 0 && selectedCount > 0}
         <button class="send-btn" on:click={sendTransferRequest}>
-          Send {files.length} {files.length === 1 ? 'file' : 'files'}
+          Send to {selectedCount} device{selectedCount > 1 ? 's' : ''}
         </button>
       {/if}
 
@@ -344,18 +419,29 @@
     {:else if transferStatus === 'transferring' || transferStatus === 'completed'}
       <section class="transfer-section">
         <h2 class="step-title">
-          {transferStatus === 'completed' ? 'Transfer complete!' : 'Transferring...'}
+          {transferStatus === 'completed' ? 'Transfer complete!' : 'Transferring to multiple devices...'}
         </h2>
-        <ProgressBar
-          progress={transferProgress}
-          bytesTransferred={transferSpeed * ((Date.now() - startTime) / 1000)}
-          {totalBytes}
-          speed={transferSpeed}
-          eta={transferEta}
-          status={transferStatus === 'completed' ? 'completed' : 'transferring'}
-        />
+
+        <div class="peer-transfers">
+          {#each peerTransfers as pt}
+            <div class="peer-transfer-item">
+              <div class="peer-transfer-header">
+                <span class="peer-transfer-name">{pt.peerName}</span>
+                <span class="peer-transfer-status" class:completed={pt.status === 'completed'} class:error={pt.status === 'error'}>
+                  {pt.status === 'pending' ? 'Waiting...' : pt.status === 'transferring' ? `${Math.round(pt.progress)}%` : pt.status === 'completed' ? '✓ Done' : '✕ Failed'}
+                </span>
+              </div>
+              {#if pt.status === 'transferring'}
+                <div class="mini-progress">
+                  <div class="mini-progress-bar" style="width: {pt.progress}%" />
+                </div>
+              {/if}
+            </div>
+          {/each}
+        </div>
+
         {#if transferStatus === 'completed'}
-          <button class="send-btn" on:click={() => (transferStatus = 'idle')}>
+          <button class="send-btn" on:click={() => { transferStatus = 'idle'; peerTransfers = []; }}>
             Send more files
           </button>
         {/if}
@@ -408,11 +494,33 @@
     background-color: rgba(30 41 59 / 0.5);
   }
 
+  .step-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 1rem;
+  }
+
   .step-title {
     margin-bottom: 1rem;
     font-size: 1.125rem;
     font-weight: 600;
     color: white;
+  }
+
+  .step-header .step-title {
+    margin-bottom: 0;
+  }
+
+  .select-all-btn {
+    font-size: 0.8125rem;
+    color: rgb(14 165 233);
+    padding: 0.25rem 0.5rem;
+    border-radius: 0.25rem;
+  }
+
+  .select-all-btn:hover {
+    background-color: rgba(14 165 233 / 0.1);
   }
 
   .qr-section {
@@ -470,6 +578,29 @@
 
   .peer-item.selected {
     outline: 2px solid rgb(14 165 233);
+    background-color: rgba(14 165 233 / 0.1);
+  }
+
+  .peer-checkbox {
+    width: 1.25rem;
+    height: 1.25rem;
+    border-radius: 0.25rem;
+    border: 2px solid rgb(100 116 139);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+  }
+
+  .peer-item.selected .peer-checkbox {
+    background-color: rgb(14 165 233);
+    border-color: rgb(14 165 233);
+  }
+
+  .peer-checkbox svg {
+    width: 0.875rem;
+    height: 0.875rem;
+    color: white;
   }
 
   .peer-icon {
@@ -489,6 +620,13 @@
   .peer-os {
     font-size: 0.875rem;
     color: rgb(148 163 184);
+  }
+
+  .selected-count {
+    margin-top: 0.75rem;
+    font-size: 0.8125rem;
+    color: rgb(14 165 233);
+    text-align: center;
   }
 
   .send-btn {
@@ -517,6 +655,59 @@
     padding: 1.5rem;
     border-radius: 0.75rem;
     background-color: rgba(30 41 59 / 0.5);
+  }
+
+  .peer-transfers {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+    margin-bottom: 1rem;
+  }
+
+  .peer-transfer-item {
+    padding: 0.75rem;
+    border-radius: 0.5rem;
+    background-color: rgba(51 65 85 / 0.5);
+  }
+
+  .peer-transfer-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 0.5rem;
+  }
+
+  .peer-transfer-name {
+    font-weight: 500;
+    color: white;
+    font-size: 0.875rem;
+  }
+
+  .peer-transfer-status {
+    font-size: 0.75rem;
+    color: rgb(148 163 184);
+  }
+
+  .peer-transfer-status.completed {
+    color: rgb(34 197 94);
+  }
+
+  .peer-transfer-status.error {
+    color: rgb(248 113 113);
+  }
+
+  .mini-progress {
+    height: 0.25rem;
+    border-radius: 9999px;
+    background-color: rgb(51 65 85);
+    overflow: hidden;
+  }
+
+  .mini-progress-bar {
+    height: 100%;
+    border-radius: 9999px;
+    background-color: rgb(14 165 233);
+    transition: width 0.3s;
   }
 
   .loading {
