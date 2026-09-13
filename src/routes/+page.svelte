@@ -2,6 +2,7 @@
   import DropZone from '$lib/components/DropZone.svelte';
   import FileList from '$lib/components/FileList.svelte';
   import QRCode from '$lib/components/QRCode.svelte';
+  import QRScanner from '$lib/components/QRScanner.svelte';
   import ProgressBar from '$lib/components/ProgressBar.svelte';
   import Toast from '$lib/components/Toast.svelte';
   import { createIdentityPacket, type DeviceData } from '$lib/utils/identity';
@@ -30,6 +31,12 @@
   let showShareLink = false;
   let linkCopied = false;
 
+  // QR Scanner
+  let showQRScanner = false;
+
+  // Mobile detection
+  let isMobileDevice = false;
+
   // Toast
   let toastShow = false;
   let toastMessage = '';
@@ -45,6 +52,11 @@
     deviceInfo = await createIdentityPacket();
     roomId = crypto.randomUUID().slice(0, 8);
     await connectToSignaling();
+
+    // Detect mobile
+    if (typeof window !== 'undefined') {
+      isMobileDevice = /Android|iPhone|iPad|iPod/.test(navigator.userAgent) || 'Capacitor' in window;
+    }
   });
 
   async function connectToSignaling() {
@@ -119,6 +131,35 @@
     });
     showShareLink = true;
     showToast('Share link created', 'success');
+  }
+
+  function handleQRScanned(result: string) {
+    // Parse QR result - could be a URL or room ID
+    const urlMatch = result.match(/\/receive\/([a-zA-Z0-9-]+)/);
+    if (urlMatch) {
+      window.location.href = `/receive/${urlMatch[1]}`;
+    } else {
+      // Assume it's a room ID
+      window.location.href = `/receive/${result}`;
+    }
+  }
+
+  async function handleMobileShare() {
+    if (files.length === 0) return;
+    try {
+      const { shareContent } = await import('$lib/utils/mobile');
+      const shared = await shareContent({
+        title: 'PeerDrop Files',
+        text: `Share ${files.length} file${files.length > 1 ? 's' : ''} via PeerDrop`,
+        url: `https://peerdrop.app/receive/${roomId}`,
+        files,
+      });
+      if (shared) {
+        showToast('Files shared', 'success');
+      }
+    } catch (e) {
+      showToast('Share failed', 'error');
+    }
   }
 
   function copyShareLink() {
@@ -225,6 +266,11 @@
             <span class="label">Room ID:</span>
             <span class="room-id">{roomId}</span>
           </div>
+          {#if isMobileDevice}
+            <button class="scan-btn" on:click={() => (showQRScanner = true)}>
+              📷 Scan QR Code
+            </button>
+          {/if}
         </div>
 
         {#if files.length > 0}
@@ -285,6 +331,12 @@
         </button>
       {/if}
 
+      {#if isMobileDevice && files.length > 0}
+        <button class="mobile-share-btn" on:click={handleMobileShare}>
+          📤 Share via...
+        </button>
+      {/if}
+
       {#if error}
         <div class="error">{error}</div>
       {/if}
@@ -311,6 +363,8 @@
     {/if}
   </main>
 </div>
+
+<QRScanner bind:show={showQRScanner} on:scanned={(e) => handleQRScanned(e.detail)} />
 
 <Toast bind:show={toastShow} message={toastMessage} type={toastType} />
 
@@ -522,5 +576,33 @@
 
   .copy-btn:hover {
     background-color: rgb(56 189 248);
+  }
+
+  .scan-btn {
+    padding: 0.5rem 1rem;
+    border-radius: 0.5rem;
+    font-size: 0.875rem;
+    font-weight: 500;
+    color: white;
+    background-color: rgb(51 65 85);
+    transition: all 0.2s;
+  }
+
+  .scan-btn:hover {
+    background-color: rgb(71 85 105);
+  }
+
+  .mobile-share-btn {
+    width: 100%;
+    padding: 0.75rem 1.5rem;
+    border-radius: 0.75rem;
+    font-weight: 600;
+    color: white;
+    background-color: rgb(34 197 94);
+    transition: all 0.2s;
+  }
+
+  .mobile-share-btn:hover {
+    background-color: rgb(74 222 128);
   }
 </style>
