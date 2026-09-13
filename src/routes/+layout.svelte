@@ -18,6 +18,7 @@
     <span class="brand-name">PeerDrop</span>
   </a>
   <div class="nav-actions">
+    <a href="/clone" class="nav-link">Clone</a>
     <a href="/history" class="nav-link">History</a>
     <ThemeToggle />
     <DesktopControls />
